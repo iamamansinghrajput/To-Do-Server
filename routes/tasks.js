@@ -7,15 +7,54 @@ const DailyReport = require('../models/DailyReport');
 router.get('/:email/:date', async (req, res) => {
   try {
     const { email, date } = req.params;
+    const normalizedEmail = email.toLowerCase();
     const startDate = new Date(date);
     startDate.setHours(0, 0, 0, 0);
     const endDate = new Date(date);
     endDate.setHours(23, 59, 59, 999);
 
-    const tasks = await Task.find({
-      userEmail: email.toLowerCase(),
+    let tasks = await Task.find({
+      userEmail: normalizedEmail,
       date: { $gte: startDate, $lte: endDate },
     }).sort({ createdAt: -1 });
+
+    // If no tasks exist for the requested date, clone the latest day's tasks
+    // for this user and reset them to incomplete so they reappear each day.
+    if (tasks.length === 0) {
+      const lastDayTask = await Task.findOne({
+        userEmail: normalizedEmail,
+        date: { $lt: startDate },
+      }).sort({ date: -1 });
+
+      if (lastDayTask) {
+        const previousStart = new Date(lastDayTask.date);
+        previousStart.setHours(0, 0, 0, 0);
+        const previousEnd = new Date(lastDayTask.date);
+        previousEnd.setHours(23, 59, 59, 999);
+
+        const templateTasks = await Task.find({
+          userEmail: normalizedEmail,
+          date: { $gte: previousStart, $lte: previousEnd },
+        }).sort({ createdAt: -1 });
+
+        const clonedTasks = templateTasks.map((task) => ({
+          userEmail: task.userEmail,
+          title: task.title,
+          completed: false,
+          date: startDate,
+        }));
+
+        if (clonedTasks.length > 0) {
+          await Task.insertMany(clonedTasks);
+          await updateDailyReport(normalizedEmail, startDate);
+
+          tasks = await Task.find({
+            userEmail: normalizedEmail,
+            date: { $gte: startDate, $lte: endDate },
+          }).sort({ createdAt: -1 });
+        }
+      }
+    }
 
     res.json(tasks);
   } catch (error) {
